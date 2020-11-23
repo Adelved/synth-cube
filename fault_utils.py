@@ -3,6 +3,8 @@ import numpy as np
 import matplotlib.pyplot as plt
 import scipy as sp
 import scipy.ndimage
+import time
+
 def normalize(function):
     return (function - function.min() ) / (function.max()- function.min())
 
@@ -162,10 +164,8 @@ class Cube:
         
     def init_seis(self,vmin=-1,vmax=1):
         seis=np.zeros((self.dim,self.dim,self.dim))
-        refl = np.random.normal(vmin,vmax,size=self.dim).repeat(self.dim).reshape(self.dim,self.dim)
-        for i in range(self.dim):
-            seis[:,i,:] = refl
-        self.seis = seis
+        refl = np.random.normal(vmin,vmax,size=self.dim).repeat(self.dim).reshape(self.dim,self.dim).repeat(self.dim).reshape(self.dim,self.dim,self.dim)
+        self.seis = refl
 
     def init_fault(self):
         self.fault = np.zeros((self.dim,self.dim,self.dim))
@@ -200,6 +200,10 @@ class Cube:
             for i in range(topology.shape[0]):
                 self.seis[:,iline,:][:,i:i+1]=sp.ndimage.interpolation.shift(
                     self.seis[:,iline,:][:,i:i+1],(-topology[:,iline][i],0),cval=0)
+
+    def fold_with_gaussian_fast(self,num_gaussian,min_smoothing=30,max_smoothing=100):
+        topology = self.random_topology(num_gaussian,min_smoothing,max_smoothing)
+        self.seis = self.seis * topology.repeat(self.dim).reshape((self.dim,self.dim,self.dim))
         
 
     def single_plane_fault(self,
@@ -294,10 +298,11 @@ class Cube:
             newvol[:,iline,:] = np.apply_along_axis(lambda t: np.convolve(t,y,mode='same'),arr=self.seis[:,iline,:],axis=0)
             temp = sp.ndimage.gaussian_filter(newvol[:,iline,:], std)
             newvol[:,iline,:] = temp + fraction*temp.std() * np.random.random(temp.shape)
-        for xline in range(newvol.shape[2]):
-            newvol[:,:,xline] = np.apply_along_axis(lambda t: np.convolve(t,y,mode='same'),arr=self.seis[:,:,xline],axis=0)
-            temp = sp.ndimage.gaussian_filter(newvol[:,:,xline], std)
-            newvol[:,:,xline] = temp + fraction*temp.std() * np.random.random(temp.shape)
+
+            #newvol[:,:,iline] = np.apply_along_axis(lambda t: np.convolve(t,y,mode='same'),arr=self.seis[:,:,iline],axis=0)
+            #temp = sp.ndimage.gaussian_filter(newvol[:,:,iline], std)
+            #newvol[:,:,iline] = temp + fraction*temp.std() * np.random.random(temp.shape)
+        
         self.seis = newvol
 
     
@@ -307,17 +312,32 @@ class Cube:
         self.init_seis()
         self.init_fault()
 
-
+start = time.time()
 vol = Cube(256)
-vol.fold_with_gaussian(20)
-vol.single_listric_fault(dip=60,depth_horizontal=3,position=30,throw=10,orientation=20,strike_type="linear")
+end = time.time()
+print("time initilize cube",end-start)
+
+start = time.time()
+vol.fold_with_gaussian_fast(20)
+end = time.time()
+print("time folding",end-start)
+
+start = time.time()
+vol.single_listric_fault(dip=60,depth_horizontal=3,position=60,throw=10,orientation=20,strike_type="linear")
+end = time.time()
+print("time single fault",end-start)
+
 vol.single_plane_fault(dip=130,position=60,throw=5,orientation=50,strike_type="linear")
-vol.single_plane_fault(dip=60,position=10,throw=10,orientation=100,strike_type="linear")
+vol.single_plane_fault(dip=60,position=10,throw=10,orientation=18,strike_type="linear")
 
-t,y = ricker(200)
+t,y = ricker(50)
+
+
+start = time.time()
 vol.convolve_noisy_volume(y,fraction=0.8,std=2)
+end = time.time()
+print("time convolve:",end-start)
 
-
-vol.plot_fault_slices(60)
-vol.plot_seis_slices(60)
+vol.plot_fault_slices(150)
+vol.plot_seis_slices(150)
 
