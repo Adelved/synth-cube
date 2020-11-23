@@ -6,6 +6,12 @@ import scipy.ndimage
 def normalize(function):
     return (function - function.min() ) / (function.max()- function.min())
 
+
+def ricker(f, length=1/10, dt=0.001):
+    t = np.linspace(-length/2, (length-dt)/2, int(length/dt))
+    y = (1.-2.*(np.pi**2)*(f**2)*(t**2))*np.exp(-(np.pi**2)*(f**2)*(t**2))
+    return t, y
+
 g = lambda x,mu,sigma: 1/(np.sqrt(2*np.pi*sigma**2)) * np.exp(-(x-mu)**2/(2*sigma**2))
 
 def guassian2D(dim,mux=1,muy=1,sigmax=1,sigmay=1):
@@ -192,7 +198,8 @@ class Cube:
         topology = self.random_topology(num_gaussian,min_smoothing,max_smoothing)
         for iline in range(self.seis.shape[0]):
             for i in range(topology.shape[0]):
-                self.seis[:,iline,:][:,i:i+1]=sp.ndimage.interpolation.shift(self.seis[:,iline,:][:,i:i+1],(-topology[:,iline][i],0),cval=0)
+                self.seis[:,iline,:][:,i:i+1]=sp.ndimage.interpolation.shift(
+                    self.seis[:,iline,:][:,i:i+1],(-topology[:,iline][i],0),cval=0)
         
 
     def single_plane_fault(self,
@@ -271,6 +278,29 @@ class Cube:
             self.fault = stich_volumes(self.fault,shift_volume_down(self.fault,throw),above,below)
             self.fault += fvol
 
+    def convolve_volume(self,y):
+        newvol = np.zeros((self.dim,self.dim,self.dim))
+        for iline in range(newvol.shape[1]):
+            #temp = sp.ndimage.interpolation.shift(newvol[:,iline,:],(shifts2[iline],0),cval=0)
+            newvol[:,iline,:] = np.apply_along_axis(lambda t: np.convolve(t,y,mode='same'),arr=self.seis[:,iline,:],axis=0)
+            newvol[:,:,iline] = np.apply_along_axis(lambda t: np.convolve(t,y,mode='same'),arr=self.seis[:,:,iline],axis=0)
+            #temp = sp.ndimage.interpolation.shift(newvol[:,:,xline],(shifts[xline],0),cval=0)
+        self.seis = newvol
+        
+
+    def convolve_noisy_volume(self,y,std=1,fraction=0.5):
+        newvol = np.zeros((self.dim,self.dim,self.dim))
+        for iline in range(newvol.shape[1]):
+            newvol[:,iline,:] = np.apply_along_axis(lambda t: np.convolve(t,y,mode='same'),arr=self.seis[:,iline,:],axis=0)
+            temp = sp.ndimage.gaussian_filter(newvol[:,iline,:], std)
+            newvol[:,iline,:] = temp + fraction*temp.std() * np.random.random(temp.shape)
+        for xline in range(newvol.shape[2]):
+            newvol[:,:,xline] = np.apply_along_axis(lambda t: np.convolve(t,y,mode='same'),arr=self.seis[:,:,xline],axis=0)
+            temp = sp.ndimage.gaussian_filter(newvol[:,:,xline], std)
+            newvol[:,:,xline] = temp + fraction*temp.std() * np.random.random(temp.shape)
+        self.seis = newvol
+
+    
     
     def __init__(self,dim):
         self.dim=dim
@@ -278,12 +308,16 @@ class Cube:
         self.init_fault()
 
 
-vol = Cube(128)
-vol.fold_with_gaussian(10)
-vol.single_listric_fault(dip=60,depth_horizontal=2,position=30,throw=10,orientation=40,strike_type="composite")
-vol.single_plane_fault(dip=20,position=60,throw=5,orientation=10,strike_type="composite")
-vol.single_plane_fault(dip=60,position=70,throw=10,orientation=40,strike_type="composite")
+vol = Cube(256)
+vol.fold_with_gaussian(20)
+vol.single_listric_fault(dip=60,depth_horizontal=3,position=30,throw=10,orientation=20,strike_type="linear")
+vol.single_plane_fault(dip=130,position=60,throw=5,orientation=50,strike_type="linear")
+vol.single_plane_fault(dip=60,position=10,throw=10,orientation=100,strike_type="linear")
 
-vol.plot_fault_slices(10)
-vol.plot_seis_slices(10)
+t,y = ricker(200)
+vol.convolve_noisy_volume(y,fraction=0.8,std=2)
+
+
+vol.plot_fault_slices(60)
+vol.plot_seis_slices(60)
 
