@@ -4,6 +4,7 @@ import matplotlib.pyplot as plt
 import scipy as sp
 import scipy.ndimage
 import time
+import itertools
 
 def normalize(function):
     return (function - function.min() ) / (function.max()- function.min())
@@ -137,7 +138,7 @@ def normal_fault(dim, dip, start_location = 0, return_values=True):
     else:
         return fault_from_fill(view)
 
-def listric_fault(dim,depth_horizontal = 1.1, start_location = 0, return_values=True):
+def listric_fault(dim,start_location = 0,depth_horizontal = 1.1, return_values=True):
     if depth_horizontal <= 1:
         depth_horizontal =1.1
     if start_location > dim:
@@ -184,47 +185,46 @@ class Cube:
         axs[2].imshow(self.fault[location,:,:],cmap="gray")
 
     #input: a set of tuples
-    def random_topology(self,num_gaussian,min_smoothing,max_smoothing):
+    def random_topology(self,num_gaussian,min_smoothing,max_smoothing,max_amplitude):
         topology=0
         for i in range(num_gaussian):
+            pos = np.random.randint(self.dim)
             topology+=guassian2D(self.dim,
-            np.random.randint(self.dim),
-            np.random.randint(self.dim),
+            pos,
+            pos,
             np.random.randint(min_smoothing,max_smoothing),
             np.random.randint(min_smoothing,max_smoothing))
-        return topology
+        return normalize(topology) * max_amplitude
     
-    def fold_with_gaussian(self,num_gaussian,min_smoothing=30,max_smoothing=100):
-        topology = self.random_topology(num_gaussian,min_smoothing,max_smoothing)
+    def fold_with_gaussian(self,num_gaussian,min_smoothing=30,max_smoothing=100,max_amplitude=5):
+        topology = self.random_topology(num_gaussian,min_smoothing,max_smoothing,max_amplitude)
         for iline in range(self.seis.shape[0]):
             for i in range(topology.shape[0]):
                 self.seis[:,iline,:][:,i:i+1]=sp.ndimage.interpolation.shift(
                     self.seis[:,iline,:][:,i:i+1],(-topology[:,iline][i],0),cval=0)
 
-    def fold_with_gaussian_fast(self,num_gaussian,min_smoothing=30,max_smoothing=100):
-        topology = self.random_topology(num_gaussian,min_smoothing,max_smoothing)
-        self.seis = self.seis * topology.repeat(self.dim).reshape((self.dim,self.dim,self.dim))
-        
+    def fold_with_gaussian_fast(self,num_gaussian,min_smoothing=30,max_smoothing=100,max_amplitude=5):
+        topology = self.random_topology(num_gaussian,min_smoothing,max_smoothing,max_amplitude)
+        for i,j in itertools.product(range(self.dim),range(self.dim)):
+            self.seis[:,i,j]=np.roll(self.seis[:,i,j],topology[i,j],axis=0)
 
-    def single_plane_fault(self,
-    dip=45,
+
+        
+##Plane fault methods
+    def plane_fault_linear_strike(self,dip=45,
     position=50,
     throw=5,
-    orientation=10,
-    strike_type="linear",
+    offset=20,
+    mode = None,
     inplace=True):
 
-        x,y = normal_fault(self.dim,dip,position)
+        x,y = normal_fault(self.dim,position)
         fault = np.zeros((self.dim,self.dim))
-
         fault[x,y] = 1
-        if strike_type == "linear":
-            strike = (normalize(np.arange(self.dim))*np.random.randint(0,orientation)).astype(int)
-        elif strike_type == "curved":
-            strike = (normalize(g(np.arange(self.dim),self.dim//2,self.dim))*orientation).astype(int)
-        elif strike_type=="composite":
-            strike =  ((normalize(g(np.arange(self.dim),self.dim//2,self.dim))*orientation).astype(int) + 
-            (normalize(np.arange(self.dim))*np.random.randint(0,orientation)).astype(int) )
+        if mode == "random":
+            strike = (normalize(np.arange(self.dim))*np.random.randint(0,offset)).astype(int)
+        else:
+            strike = (normalize(np.arange(self.dim))*offset).astype(int)
 
         above = np.zeros((self.dim,self.dim,self.dim))
         below = np.zeros((self.dim,self.dim,self.dim))
@@ -237,33 +237,101 @@ class Cube:
 
         seisvol = stich_volumes(self.seis,shift_volume_down(self.seis,throw),above,below)
         self.seis = seisvol
-
         if len(np.unique(self.fault)) == 1:
             self.fault = fvol
         else:
             self.fault = stich_volumes(self.fault,shift_volume_down(self.fault,throw),above,below)
             self.fault += fvol
-        
 
-    def single_listric_fault(self,dip=45,
+    def plane_fault_curved_strike(self,dip=45,
+    position=50,
+    throw=5,
+    amplitude=10,
+    mode=None,
+    inplace=True):
+
+        x,y = normal_fault(self.dim,position)
+        fault = np.zeros((self.dim,self.dim))
+        fault[x,y] = 1
+        if mode == "random":
+            strike = (normalize(g(np.arange(self.dim),self.dim//2,self.dim))*np.random.randint(0,amplitude)).astype(int)
+        else:
+            strike = (normalize(g(np.arange(self.dim),self.dim//2,self.dim))*amplitude).astype(int)
+
+
+        above = np.zeros((self.dim,self.dim,self.dim))
+        below = np.zeros((self.dim,self.dim,self.dim))
+        fvol = np.zeros((self.dim,self.dim,self.dim))
+
+        for i in range(self.dim):
+            fvol[:,i,:] = sp.ndimage.interpolation.shift(fault,(0,strike[i]),cval=0,prefilter=False,order=1)
+            above[:,i,:] = partial_fill_above(fvol[:,i,:])
+            below[:,i,:] = partial_fill_below(fvol[:,i,:])
+
+        seisvol = stich_volumes(self.seis,shift_volume_down(self.seis,throw),above,below)
+        self.seis = seisvol
+        if len(np.unique(self.fault)) == 1:
+            self.fault = fvol
+        else:
+            self.fault = stich_volumes(self.fault,shift_volume_down(self.fault,throw),above,below)
+            self.fault += fvol
+
+    def plane_fault_composite_strike(self,dip=45,
+    position=50,
+    throw=5,
+    offset=10,
+    amplitude=10,
+    mode = None,
+    inplace=True):
+
+        x,y = normal_fault(self.dim,position)
+        fault = np.zeros((self.dim,self.dim))
+        fault[x,y] = 1
+        if mode == "random":
+            strike =  ((normalize(g(np.arange(self.dim),self.dim//2,self.dim))*amplitude).astype(int) + 
+            (normalize(np.arange(self.dim))*np.random.randint(0,offset)).astype(int) )
+        else:
+            strike =  ((normalize(g(np.arange(self.dim),self.dim//2,self.dim))*amplitude).astype(int) + 
+            (normalize(np.arange(self.dim))*np.random.randint(0,offset)).astype(int) )
+            
+
+
+        above = np.zeros((self.dim,self.dim,self.dim))
+        below = np.zeros((self.dim,self.dim,self.dim))
+        fvol = np.zeros((self.dim,self.dim,self.dim))
+
+        for i in range(self.dim):
+            fvol[:,i,:] = sp.ndimage.interpolation.shift(fault,(0,strike[i]),cval=0,prefilter=False,order=1)
+            above[:,i,:] = partial_fill_above(fvol[:,i,:])
+            below[:,i,:] = partial_fill_below(fvol[:,i,:])
+
+        seisvol = stich_volumes(self.seis,shift_volume_down(self.seis,throw),above,below)
+        self.seis = seisvol
+        if len(np.unique(self.fault)) == 1:
+            self.fault = fvol
+        else:
+            self.fault = stich_volumes(self.fault,shift_volume_down(self.fault,throw),above,below)
+            self.fault += fvol
+
+##listric fault methods
+    def listric_fault_linear_strike(self,dip=45,
+    position=50,
     depth_horizontal=1.1,
-    position=50,
     throw=5,
-    orientation=10,
-    strike_type="linear",
+    offset=10,
+    mode=None,
     inplace=True):
 
-        x,y = listric_fault(self.dim,depth_horizontal,position)
+        x,y = listric_fault(self.dim,position,depth_horizontal)
         fault = np.zeros((self.dim,self.dim))
         fault[x,y] = 1
 
-        if strike_type == "linear":
-            strike = (normalize(np.arange(self.dim))*np.random.randint(0,orientation)).astype(int)
-        elif strike_type == "curved":
-            strike = (normalize(g(np.arange(self.dim),self.dim//2,self.dim))*orientation).astype(int)
-        elif strike_type=="composite":
-            strike =  ((normalize(g(np.arange(self.dim),self.dim//2,self.dim))*orientation).astype(int) + 
-            (normalize(np.arange(self.dim))*np.random.randint(0,orientation)).astype(int) )
+        if mode == "random":
+            strike = (normalize(np.arange(self.dim))*np.random.randint(0,offset)).astype(int)
+        else:
+            strike = (normalize(np.arange(self.dim))*offset).astype(int)
+
+
 
         above = np.zeros((self.dim,self.dim,self.dim))
         below = np.zeros((self.dim,self.dim,self.dim))
@@ -281,6 +349,85 @@ class Cube:
         else:
             self.fault = stich_volumes(self.fault,shift_volume_down(self.fault,throw),above,below)
             self.fault += fvol
+
+    def listric_fault_curved_strike(self,dip=45,
+    position=50,
+    depth_horizontal=1.1,
+    throw=5,
+    amplitude=10,
+    mode=None,
+    inplace=True):
+
+        x,y = listric_fault(self.dim,position,depth_horizontal)
+        fault = np.zeros((self.dim,self.dim))
+        fault[x,y] = 1
+
+        if mode == "random":
+            strike = (normalize(g(np.arange(self.dim),self.dim//2,self.dim))*np.random.randint(0,amplitude)).astype(int)
+        else:
+            strike = (normalize(g(np.arange(self.dim),self.dim//2,self.dim))*amplitude).astype(int)
+
+
+
+        above = np.zeros((self.dim,self.dim,self.dim))
+        below = np.zeros((self.dim,self.dim,self.dim))
+        fvol = np.zeros((self.dim,self.dim,self.dim))
+
+        for i in range(self.dim):
+            fvol[:,i,:] = sp.ndimage.interpolation.shift(fault,(0,-strike[i]),cval=0,prefilter=False,order=1)
+            above[:,i,:] = partial_fill_above(fvol[:,i,:])
+            below[:,i,:] = partial_fill_below(fvol[:,i,:])
+
+        seisvol = stich_volumes(self.seis,shift_volume_down(self.seis,throw),above,below)
+        self.seis = seisvol
+        if len(np.unique(self.fault)) == 1:
+            self.fault = fvol
+        else:
+            self.fault = stich_volumes(self.fault,shift_volume_down(self.fault,throw),above,below)
+            self.fault += fvol
+
+    def listric_fault_composite_strike(self,dip=45,
+    position=50,
+    depth_horizontal=1.1,
+    throw=5,
+    offset=10,
+    amplitude=10,
+    mode=None,
+    inplace=True):
+
+        x,y = listric_fault(self.dim,position,depth_horizontal)
+        fault = np.zeros((self.dim,self.dim))
+        fault[x,y] = 1
+
+        if mode == "random":
+            strike =  ((normalize(g(np.arange(self.dim),self.dim//2,self.dim))*amplitude).astype(int) + 
+            (normalize(np.arange(self.dim))*np.random.randint(0,offset)).astype(int) )
+        else:
+            strike =  ((normalize(g(np.arange(self.dim),self.dim//2,self.dim))*amplitude).astype(int) + 
+            (normalize(np.arange(self.dim))*np.random.randint(0,offset)).astype(int) )
+
+
+        above = np.zeros((self.dim,self.dim,self.dim))
+        below = np.zeros((self.dim,self.dim,self.dim))
+        fvol = np.zeros((self.dim,self.dim,self.dim))
+
+        for i in range(self.dim):
+            fvol[:,i,:] = sp.ndimage.interpolation.shift(fault,(0,-strike[i]),cval=0,prefilter=False,order=1)
+            above[:,i,:] = partial_fill_above(fvol[:,i,:])
+            below[:,i,:] = partial_fill_below(fvol[:,i,:])
+
+        seisvol = stich_volumes(self.seis,shift_volume_down(self.seis,throw),above,below)
+        self.seis = seisvol
+        if len(np.unique(self.fault)) == 1:
+            self.fault = fvol
+        else:
+            self.fault = stich_volumes(self.fault,shift_volume_down(self.fault,throw),above,below)
+            self.fault += fvol
+
+
+
+
+##convolution
 
     def convolve_volume(self,y):
         newvol = np.zeros((self.dim,self.dim,self.dim))
@@ -318,25 +465,23 @@ end = time.time()
 print("time initilize cube",end-start)
 
 start = time.time()
-vol.fold_with_gaussian_fast(20)
+vol.fold_with_gaussian(10,min_smoothing=50,max_smoothing=150,max_amplitude=10)
 end = time.time()
+
+vol.plot_seis_slices(150)
+
 print("time folding",end-start)
 
-start = time.time()
-vol.single_listric_fault(dip=60,depth_horizontal=3,position=60,throw=10,orientation=20,strike_type="linear")
-end = time.time()
-print("time single fault",end-start)
 
-vol.single_plane_fault(dip=130,position=60,throw=5,orientation=50,strike_type="linear")
-vol.single_plane_fault(dip=60,position=10,throw=10,orientation=18,strike_type="linear")
+vol.listric_fault_composite_strike(depth_horizontal=2,offset=30,amplitude=10)
 
 t,y = ricker(50)
 
 
-start = time.time()
-vol.convolve_noisy_volume(y,fraction=0.8,std=2)
-end = time.time()
-print("time convolve:",end-start)
+#start = time.time()
+#vol.convolve_noisy_volume(y,fraction=0.8,std=2)
+#end = time.time()
+#print("time convolve:",end-start)
 
 vol.plot_fault_slices(150)
 vol.plot_seis_slices(150)
